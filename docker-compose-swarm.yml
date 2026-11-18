@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  media-server:
+    # image: your-docker-registry/node-media-server:latest # Use a built image name for Swarm workers
+    image: hcf-server-hcf-live-media-svr:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    deploy:
+      mode: replicated
+      replicas: 2 # Start with 2 instances; Swarm load balances incoming traffic across them
+      resources:
+        limits:
+          cpus: '2.0'       # CPU limit to prevent a single FFmpeg process from starving the host
+          memory: 2048M     # Memory limit per container
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+    ports:
+      - target: 1935
+        published: 1935
+        mode: host # Allows RTMP ingest routing
+      - target: 8000
+        published: 8000
+        mode: ingress # Docker Swarm load balances HLS HTTP viewer requests across replicas
+    environment:
+      - API_BASE_URL=http://host.docker.internal:7002
+    volumes:
+      # Note: For multi-node swarms, replace local bind with a shared network volume (e.g., NFS or AWS EFS)
+      - ./media:/usr/src/app/media

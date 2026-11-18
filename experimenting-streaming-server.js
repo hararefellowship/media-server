@@ -7,6 +7,8 @@ const cors = require('cors');
 const NodeMediaServer = require('node-media-server');
 const axios = require('axios'); // Import axios (if using CommonJS in Node.js)
 
+const API_BASE_URL = process.env.API_BASE_URL || 'http://host.docker.internal:7002';
+
 // Polyfill webcrypto for Node environment
 if (!globalThis.crypto) {
   globalThis.crypto = webcrypto;
@@ -119,7 +121,11 @@ nms.on('postPublish', async (id, StreamPath) => {
 
   let dynamicStreamKey;
   try {
-    const response = await axios.get('http://localhost:7002/api/v1/streams/getActiveLiveStream');
+    const targetUrl = `${API_BASE_URL}/api/v1/streams/getActiveLiveStream`;
+    console.log(`[API Request] Fetching active stream from: ${targetUrl}`);
+    const response = await axios.get(targetUrl);
+    //const response = await axios.get('http://host.docker.internal:7002/api/v1/streams/getActiveLiveStream');
+    
     const streamKey = response.data.body.streamKey; 
     console.log('Fetched Stream Key:', streamKey);
     dynamicStreamKey = streamKey;
@@ -157,31 +163,65 @@ nms.on('postPublish', async (id, StreamPath) => {
     try { ffmpegProcesses.get(id).kill(); } catch (e) {}
   }
 
-  //const outputPath = path.join(mediaPath, 'recordings', '${streamKey}.mp4`; // Ensure this directory exists!
-
-  //const outputPath = path.join(mediaPath, 'recordings', streamKey, '.mp4'); // Ensure this directory exists!
-  //const outputPath = path.join(mediaPath) + `/recordings/${streamKey}.mp4`; // Ensure this directory exists!
-  //fs.mkdirSync(outputPath, { recursive: true });
-
-  // Spawn FFmpeg explicitly
-  const ffmpegProc = spawn(FFMPEG_PATH, [
+  // Multi-bitrate HLS Transcoding Parameters (FIXED PARSING)
+  const ffmpegArgs = [
     '-i', rtmpInput,
-    '-c:v', 'copy',      // Pass H.264 video through directly
-    '-c:a', 'aac',       // Convert audio to web-compatible AAC
+
+    // Filter Graph: Split input into 6 streams and scale each target resolution
+    '-filter_complex',
+    '[0:v]split=6[v1][v2][v3][v4][v5][v6];' +
+    '[v2]scale=w=1280:h=720[v2out];' +
+    '[v3]scale=w=960:h=540[v3out];' +
+    '[v4]scale=w=854:h=480[v4out];' +
+    '[v5]scale=w=640:h=360[v5out];' +
+    '[v6]scale=w=256:h=144[v6out]',
+
+    // Video 0: 1080p (Original Stream Copy / High Quality)
+    '-map', '[v1]', '-c:v:0', 'libx264', '-b:v:0', '4000k', '-maxrate:v:0', '4200k', '-bufsize:v:0', '6000k',
+    
+    // Video 1: 720p
+    '-map', '[v2out]', '-c:v:1', 'libx264', '-b:v:1', '2200k', '-maxrate:v:1', '2400k', '-bufsize:v:1', '3500k',
+    
+    // Video 2: 540p (New)
+    '-map', '[v3out]', '-c:v:2', 'libx264', '-b:v:2', '1400k', '-maxrate:v:2', '1500k', '-bufsize:v:2', '2100k',
+
+    // Video 3: 480p
+    '-map', '[v4out]', '-c:v:3', 'libx264', '-b:v:3', '1000k', '-maxrate:v:3', '1100k', '-bufsize:v:3', '1500k',
+
+    // Video 4: 360p (New)
+    '-map', '[v5out]', '-c:v:4', 'libx264', '-b:v:4', '6000k' /* wait, 600k */, '-b:v:4', '600k', '-maxrate:v:4', '650k', '-bufsize:v:4', '900k',
+
+    // Video 5: 144p (New)
+    '-map', '[v6out]', '-c:v:5', 'libx264', '-b:v:5', '150k', '-maxrate:v:5', '165k', '-bufsize:v:5', '250k',
+
+    // Map Audio to all six streams
+    '-map', '0:a?', '-c:a:0', 'aac', '-b:a:0', '128k',
+    '-map', '0:a?', '-c:a:1', 'aac', '-b:a:1', '128k',
+    '-map', '0:a?', '-c:a:2', 'aac', '-b:a:2', '128k',
+    '-map', '0:a?', '-c:a:3', 'aac', '-b:a:3', '96k',
+    '-map', '0:a?', '-c:a:4', 'aac', '-b:a:4', '96k',
+    '-map', '0:a?', '-c:a:5', 'aac', '-b:a:5', '64k',
+
+    // Encoding Performance Options
+    '-preset', 'veryfast',
+    '-g', '60',
+    '-keyint_min', '60',
+    '-sc_threshold', '0',
+
+    // HLS Output Format Options
     '-f', 'hls',
     '-hls_time', '2',
     '-hls_playlist_type', 'event',
-    '-hls_flags', 'delete_segments',
-    m3u8Output,
+    '-master_pl_name', 'index.m3u8',
+    '-var_stream_map', 'v:0,a:0,name:1080p v:1,a:1,name:720p v:2,a:2,name:540p v:3,a:3,name:480p v:4,a:4,name:360p v:5,a:5,name:144p',    
+    '-hls_segment_type', 'fmp4',
+    '-hls_flags', 'delete_segments+independent_segments+program_date_time',
 
-    // // for mp4 live recording
-    // '-y',
-    // '-i', rtmpInput, // remove this as we're repeating it
-    // '-c', 'copy',
-    // '-movflags', '+frag_keyframe+empty_moov', // Crucial for fragmenting MP4 so it's readable if interrupted
-    // outputPath
-  ]);
+    // FIXED: Ensure forward slashes for FFmpeg's %v pattern across Windows/Linux
+    path.join(outputDir, 'v%v', 'stream.m3u8').replace(/\\/g, '/')
+  ];
 
+  const ffmpegProc = spawn(FFMPEG_PATH, ffmpegArgs);
   ffmpegProcesses.set(id, ffmpegProc);
 
   // Pipe FFmpeg output straight to your terminal
@@ -207,30 +247,20 @@ nms.on('postPublish', async (id, StreamPath) => {
     try { mp4Processes.get(id).kill(); } catch (e) {}
   }
 
-  // const mp4Proc = spawn(FFMPEG_PATH, [
-  //   '-y',
-  //   '-i', rtmpInput,
-  //   '-c:v', 'copy',
-  //   '-c:a', 'aac',
-  //   '-movflags', '+frag_keyframe+empty_moov', // Fragment MP4 so it's readable if interrupted
-  //   mp4OutputPath
-  // ]);
-
   // the below works, and doesnt corrupt when network changes or jump and skips happen on the video::
 
-  // todo - we need to save the mp4 file with a specific quality e.g 360p, since the saved file can be large!!! 
-
-  // Spawn MP4 Recording Process with timestamp fix flags
-  const mp4Proc = spawn(FFMPEG_PATH, [
+  // todo - we need to save the mp4 file with a specific quality e.g 360p, since the saved file can be large!!!
+  const mp4Args = [
     '-y',
-    '-fflags', '+genpts',             // Regenerate timestamps to keep them linear
+    '-fflags', '+genpts', // Regenerate timestamps to keep them linear
     '-i', rtmpInput,
     '-c:v', 'copy',
     '-c:a', 'aac',
     '-avoid_negative_ts', 'make_zero', // Fixes jumping/negative timestamps from live streams
     '-movflags', '+frag_keyframe+empty_moov',
     mp4OutputPath
-  ]);
+  ]; 
+  const mp4Proc = spawn(FFMPEG_PATH, mp4Args);
 
   mp4Processes.set(id, mp4Proc);
 
@@ -244,7 +274,7 @@ nms.on('postPublish', async (id, StreamPath) => {
     mp4Processes.delete(id);
 
     // todo - send a POST request callback to server to process the file to S3 bucket & also save the perm link to DB
-    // 
+    // should we do it inside here or we can use a separate process outside? Event driven architecture? Spring & AWS?
   });
 
 });
