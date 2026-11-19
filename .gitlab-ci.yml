@@ -1,0 +1,47 @@
+## YAML Template.
+---
+image: docker:stable
+services:
+  # - docker:19.03.7-dind
+  - docker:20.10.9-dind
+variables:
+  SSH_PRIVATE_KEY_VALUE: ${APP_SSH_PRIVATE_KEY_${CI_COMMIT_REF_NAME}}
+  PUBLIC_SERVER_IP_VALUE: ${APP_PUBLIC_SERVER_IP_${CI_COMMIT_REF_NAME}}
+  DOCKER_COMPOSE_FILE: server-docker-compose-${CI_COMMIT_REF_NAME}.yml
+
+stages:
+  - build_and_push_docker_image
+  - deploy
+
+docker build:
+  stage: build_and_push_docker_image
+  image: docker:stable
+  before_script:
+      - source .${CI_COMMIT_REF_NAME}.env
+  script:
+    - chmod +x build.sh
+    - chmod +x release.sh
+    - ./release.sh
+    - echo "Build successful. Hurray, kudos and jars of coffee to the engineers & developers"
+
+deploy:
+  image: alpine:3.11
+  stage: deploy
+  only: 
+    - test
+  before_script:
+    - apk update && apk add openssh-client bash
+    - mkdir -p ~/.ssh
+    - chmod 700 ~/.ssh
+    - 'which ssh-agent || (apt-get update -y && apt-get install openssh-client -y)'
+    - eval $(ssh-agent -s)
+    - echo "$SSH_PRIVATE_KEY_VALUE" | tr -d '\r' | ssh-add - > /dev/null
+    - touch ~/.ssh/config
+    # suppress password prompt :: use ssh only
+    - echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config
+    - source .${CI_COMMIT_REF_NAME}.env
+  script:
+    # what about invoking the docker-compose.yml in the project directly without having to use the one on the server?
+    - ssh ubuntu@$PUBLIC_SERVER_IP_VALUE "docker -v; sudo docker system prune -f -a; sudo docker container ls; sudo docker login -u "${DOCKER_USERNAME}" -p "${DOCKER_PASSWORD}" docker.io; sudo docker-compose -f /home/ubuntu/data/$DOCKER_COMPOSE_FILE down; sudo docker-compose -f /home/ubuntu/data/$DOCKER_COMPOSE_FILE pull; sudo docker-compose -f /home/ubuntu/data/$DOCKER_COMPOSE_FILE up -d;"
+  after_script:
+    - echo "Deployed services successfully"
