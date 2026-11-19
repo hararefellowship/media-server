@@ -26,6 +26,15 @@ const httpApp = express();
 httpApp.use(cors());
 httpApp.use('/', express.static(mediaPath));
 
+const sslOptions = {
+  key: fs.readFileSync('/etc/letsencrypt/live/test.hararechristianfellowship.org/privkey.pem'),
+  cert: fs.readFileSync('/etc/letsencrypt/live/test.hararechristianfellowship.org/fullchain.pem')
+};
+
+https.createServer(sslOptions, httpApp).listen(8443, () => {
+  console.log('[HLS Web Server] Serving multi-bitrate HLS streams securely at https://domain.co.zw:8443/');
+});
+
 httpApp.listen(8000, () => {
   console.log('[HLS Web Server] Serving HLS streams at http://localhost:8000/');
 });
