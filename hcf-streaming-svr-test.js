@@ -14,9 +14,6 @@ if (!globalThis.crypto) {
   globalThis.crypto = webcrypto;
 }
 
-// ------------------------------------------------------------------
-// 1. PATHS & DIRECTORY CREATION
-// ------------------------------------------------------------------
 const mediaPath = path.join(__dirname, 'media');
 const FFMPEG_PATH = '/usr/bin/ffmpeg'; // Ensure this points to your FFmpeg binary
 
@@ -24,66 +21,17 @@ if (!fs.existsSync(mediaPath)) {
   fs.mkdirSync(mediaPath, { recursive: true });
 }
 
-// Map to keep track of active FFmpeg child processes
 const ffmpegProcesses = new Map();
-
-// ------------------------------------------------------------------
-// 2. STANDALONE EXPRESS SERVER (HLS FILE SERVING)
-// ------------------------------------------------------------------
 const httpApp = express();
-
-// Enable CORS so Video.js can fetch streams from any origin
 httpApp.use(cors());
-
-// Serve the media directory statically at the root path '/'
 httpApp.use('/', express.static(mediaPath));
 
-// Start the Express server on port 8000
 httpApp.listen(8000, () => {
   console.log('[HLS Web Server] Serving HLS streams at http://localhost:8000/');
 });
 
 httpApp.use(express.json()); // to parse JSON bodies
 
-let RMTP_URL = null;
-// # API endpoint called by Vue.js to create a new broadcast session
-httpApp.post('/api/streams/create', async (req, res) => {
-  console.log('req body: ', req.body);
-  const { title } = req.body;
-  const { streamKey } = req.body; //`stream_${crypto.randomBytes(4).toString('hex')}`;
-  console.log('streamKey: ', streamKey);
-
-  const app = 'live'; // we should make this dir configurable such that if the dir changes on server
-  
-  const rtmpUrl = `rtmp://localhost:1935/${app}`;
-  console.log('rtmpUrl: ', rtmpUrl);
-
-  RMTP_URL = rtmpUrl;
-  console.log('RMTP_URL: ', RMTP_URL);
-
-  const playbackUrl = `http://localhost:8000/${app}/${streamKey}/index.m3u8`;
-  console.log('playbackUrl: ', playbackUrl);
-
-  // Save initial pending state to DB if desired
-  try {
-    /* 
-      await db.StreamSession.create({
-        title: title || 'Untitled Stream',
-        streamKey: streamKey,
-        app: app,
-        playbackUrl: playbackUrl,
-        status: 'PENDING'
-      });
-    */
-    res.json({ success: true, streamKey, rtmpUrl, playbackUrl });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// ------------------------------------------------------------------
-// 3. NODE MEDIA SERVER (RTMP ONLY)
-// ------------------------------------------------------------------
 const nmsConfig = {
   logType: 3,
   rtmp: {
@@ -93,20 +41,11 @@ const nmsConfig = {
     ping: 30,
     ping_timeout: 60
   }
-  // Notice: 'http' and 'trans' sections are omitted so NodeMediaServer doesn't
-  // interfere with port 8000 or attempt internal FFmpeg management.
 };
 
 const nms = new NodeMediaServer(nmsConfig);
 
-// ------------------------------------------------------------------
-// 4. RTMP EVENTS & MANUAL FFMPEG TRANSCODING
-// ------------------------------------------------------------------
-
-// To make your NodeMediaServer (nms) backend snippet dynamically pull the stream directory path and stream key from an API
-// endpoint or database, you need to make the postPublish event handler async.
-// This allows you to await your database query or API call before NodeMediaServer processes the stream path.
-nms.on('postPublish', async (id, StreamPath) => {
+nms.on('postPublish', async (id, StreamPath) => { // async so we can wait for external services e.g API calls
   let actualPath = typeof StreamPath === 'string' ? StreamPath : null;
 
   // Fallback lookup for session path
@@ -120,32 +59,51 @@ nms.on('postPublish', async (id, StreamPath) => {
   }
 
   let dynamicStreamKey;
-  try {
-    const targetUrl = `${API_BASE_URL}/api/v1/streams/getActiveLiveStream`;
-    console.log(`[API Request] Fetching active stream from: ${targetUrl}`);
-    const response = await axios.get(targetUrl);
-    //const response = await axios.get('http://host.docker.internal:7002/api/v1/streams/getActiveLiveStream');
-    
-    const streamKey = response.data.body.streamKey; 
-    console.log('Fetched Stream Key:', streamKey);
-    dynamicStreamKey = streamKey;
-  } catch (error) {
-    console.error('[Stream Error] Failed to fetch stream key from API:', error.message);
-    dynamicStreamKey = '1970-teststream'; // Fallback
+  const targetUrl = `${API_BASE_URL}/api/v1/streams/getActiveLiveStream`;
+  const maxAttempts = 3;
+  const baseDelayMs = 400;
+
+  console.log(`[API Request] Fetching active stream from: ${targetUrl}`);
+
+  for(let attempt = 1; attempt <= maxAttempts; attempt++){
+    try{
+      const response = await axios.get(targetUrl, { timeout: 3000 });
+      const streamKey = response.data?.body?.streamKey; 
+      if (typeof streamKey === 'string' && streamKey.trim().length > 0) {
+        dynamicStreamKey = streamKey;
+        console.log('Fetched Stream Key:', dynamicStreamKey);
+        break;
+      }
+      throw new Error('Missing or invalid streamKey in response payload');
+    }catch(error){
+      const status = error.response?.status;
+      const isClientError = status >= 400 && status < 500 && status !== 408 && status !== 429;
+      console.warn(`[API Attempt ${attempt}/${maxAttempts}] ${error.message}`);
+      
+      if (isClientError || attempt === maxAttempts) {
+        break;
+      }
+
+      const expDelay = baseDelayMs * 2 ** (attempt - 1);
+      const jitterMs = Math.floor(Math.random() * 150);
+      await new Promise((resolve) => setTimeout(resolve, expDelay + jitterMs));
+    }
+
+    if (!dynamicStreamKey) {
+      console.error('[Stream Fallback] Using fallback streamKey: 1970-teststream');
+      dynamicStreamKey = '1970-teststream';
+    }
   }
 
   if (!actualPath) {
-    //actualPath = '/live/2026-10-18M-sunday-school-service'; // this is where we change in the main service
     actualPath = '/live/' + dynamicStreamKey; 
   }
-
-  console.log(`\n========================================`);
+  console.log(`\n========================================================================`);
   console.log(`[Stream Started] StreamPath: ${actualPath}`);
 
   // Extract application name and stream key
   const parts = actualPath.split('/').filter(Boolean);
   const app = parts[0] || 'live';
-  //const streamKey = parts[1] || '1970-teststream';
   const streamKey = parts[1] || dynamicStreamKey;
 
   // Ensure output folder structure exists (e.g., ./media/live/2026-10-18M-sunday-school/)
@@ -167,53 +125,38 @@ nms.on('postPublish', async (id, StreamPath) => {
   const ffmpegArgs = [
     '-i', rtmpInput,
 
-    // Filter Graph: Split input into 6 streams and scale each target resolution
+     // Split input into 4 streams and scale target resolutions
     '-filter_complex',
-    '[0:v]split=6[v1][v2][v3][v4][v5][v6];' +
-    '[v2]scale=w=1280:h=720[v2out];' +
-    '[v3]scale=w=960:h=540[v3out];' +
-    '[v4]scale=w=854:h=480[v4out];' +
-    '[v5]scale=w=640:h=360[v5out];' +
-    '[v6]scale=w=256:h=144[v6out]',
+    '[0:v]split=4[v1][v2][v3][v4];' +
+      '[v1]scale=w=960:h=540[v1out];' +
+      '[v2]scale=w=854:h=480[v2out];' +
+      '[v3]scale=w=640:h=360[v3out];' +
+      '[v4]scale=w=256:h=144[v4out]',
 
-    // Video 0: 1080p (Original Stream Copy / High Quality)
-    '-map', '[v1]', '-c:v:0', 'libx264', '-b:v:0', '4000k', '-maxrate:v:0', '4200k', '-bufsize:v:0', '6000k',
-    
-    // Video 1: 720p
-    '-map', '[v2out]', '-c:v:1', 'libx264', '-b:v:1', '2200k', '-maxrate:v:1', '2400k', '-bufsize:v:1', '3500k',
-    
-    // Video 2: 540p (New)
-    '-map', '[v3out]', '-c:v:2', 'libx264', '-b:v:2', '1400k', '-maxrate:v:2', '1500k', '-bufsize:v:2', '2100k',
+    // Video renditions (v:0 .. v:3)
+    '-map', '[v1out]', '-c:v:0', 'libx264', '-b:v:0', '1400k', '-maxrate:v:0', '1500k', '-bufsize:v:0', '2100k',
+    '-map', '[v2out]', '-c:v:1', 'libx264', '-b:v:1', '1000k', '-maxrate:v:1', '1100k', '-bufsize:v:1', '1500k',
+    '-map', '[v3out]', '-c:v:2', 'libx264', '-b:v:2', '600k', '-maxrate:v:2', '650k', '-bufsize:v:2', '900k',
+    '-map', '[v4out]', '-c:v:3', 'libx264', '-b:v:3', '150k', '-maxrate:v:3', '165k', '-bufsize:v:3', '250k',
 
-    // Video 3: 480p
-    '-map', '[v4out]', '-c:v:3', 'libx264', '-b:v:3', '1000k', '-maxrate:v:3', '1100k', '-bufsize:v:3', '1500k',
-
-    // Video 4: 360p (New)
-    '-map', '[v5out]', '-c:v:4', 'libx264', '-b:v:4', '6000k' /* wait, 600k */, '-b:v:4', '600k', '-maxrate:v:4', '650k', '-bufsize:v:4', '900k',
-
-    // Video 5: 144p (New)
-    '-map', '[v6out]', '-c:v:5', 'libx264', '-b:v:5', '150k', '-maxrate:v:5', '165k', '-bufsize:v:5', '250k',
-
-    // Map Audio to all six streams
+    // Optional audio mapped to all 4 renditions
     '-map', '0:a?', '-c:a:0', 'aac', '-b:a:0', '128k',
-    '-map', '0:a?', '-c:a:1', 'aac', '-b:a:1', '128k',
-    '-map', '0:a?', '-c:a:2', 'aac', '-b:a:2', '128k',
-    '-map', '0:a?', '-c:a:3', 'aac', '-b:a:3', '96k',
-    '-map', '0:a?', '-c:a:4', 'aac', '-b:a:4', '96k',
-    '-map', '0:a?', '-c:a:5', 'aac', '-b:a:5', '64k',
+    '-map', '0:a?', '-c:a:1', 'aac', '-b:a:1', '96k',
+    '-map', '0:a?', '-c:a:2', 'aac', '-b:a:2', '64k',
+    '-map', '0:a?', '-c:a:3', 'aac', '-b:a:3', '64k',
 
-    // Encoding Performance Options
+    // Encoding performance & keyframe alignment
     '-preset', 'veryfast',
     '-g', '60',
     '-keyint_min', '60',
     '-sc_threshold', '0',
-
-    // HLS Output Format Options
+    
+    // HLS output options
     '-f', 'hls',
     '-hls_time', '2',
     '-hls_playlist_type', 'event',
     '-master_pl_name', 'index.m3u8',
-    '-var_stream_map', 'v:0,a:0,name:1080p v:1,a:1,name:720p v:2,a:2,name:540p v:3,a:3,name:480p v:4,a:4,name:360p v:5,a:5,name:144p',    
+    '-var_stream_map', 'v:0,a:0,name:540p v:1,a:1,name:480p v:2,a:2,name:360p v:3,a:3,name:144p',
     '-hls_segment_type', 'fmp4',
     '-hls_flags', 'delete_segments+independent_segments+program_date_time',
 
