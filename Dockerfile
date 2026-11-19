@@ -16,7 +16,7 @@ COPY package*.json ./
 RUN npm install
 
 # Copy the rest of your application code :: consider copy the server file only!!
-COPY hcf-streaming-svr-test.js ./
+COPY hcf-media-svr-test.js ./
 
 # Ensure media directory exists inside the container
 RUN mkdir -p /usr/src/app/media
@@ -26,4 +26,4 @@ EXPOSE 1935
 EXPOSE 8000
 
 # Start your Node.js application
-CMD ["node", "hcf-streaming-svr-test.js"]
+CMD ["node", "hcf-media-svr-test.js"]
