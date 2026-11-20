@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs');
+const https = require('https');
 const { spawn } = require('child_process');
 const { webcrypto } = require('node:crypto');
 const express = require('express');
@@ -8,6 +9,12 @@ const NodeMediaServer = require('node-media-server');
 const axios = require('axios'); // Import axios (if using CommonJS in Node.js)
 
 const API_BASE_URL = process.env.API_BASE_URL || 'http://host.docker.internal:7002';
+
+// Optional HTTPS. Set both paths to enable it (e.g. Let's Encrypt privkey.pem / fullchain.pem).
+// When unset, or the files can't be read, the server runs HTTP-only instead of crashing.
+const TLS_KEY_PATH = process.env.TLS_KEY_PATH;
+const TLS_CERT_PATH = process.env.TLS_CERT_PATH;
+const HTTPS_PORT = Number(process.env.HTTPS_PORT) || 8443;
 
 // Polyfill webcrypto for Node environment
 if (!globalThis.crypto) {
@@ -26,14 +33,21 @@ const httpApp = express();
 httpApp.use(cors());
 httpApp.use('/', express.static(mediaPath));
 
-const sslOptions = {
-  key: fs.readFileSync('/etc/letsencrypt/live/test.hararechristianfellowship.org/privkey.pem'),
-  cert: fs.readFileSync('/etc/letsencrypt/live/test.hararechristianfellowship.org/fullchain.pem')
-};
-
-https.createServer(sslOptions, httpApp).listen(8443, () => {
-  console.log('[HLS Web Server] Serving multi-bitrate HLS streams securely at https://domain.co.zw:8443/');
-});
+if (TLS_KEY_PATH && TLS_CERT_PATH) {
+  try {
+    const sslOptions = {
+      key: fs.readFileSync(TLS_KEY_PATH),
+      cert: fs.readFileSync(TLS_CERT_PATH)
+    };
+    https.createServer(sslOptions, httpApp).listen(HTTPS_PORT, () => {
+      console.log(`[HLS Web Server] Serving HLS streams over HTTPS on port ${HTTPS_PORT}`);
+    });
+  } catch (err) {
+    console.error(`[HTTPS] Disabled: cannot read TLS key/cert (${err.message}). Continuing with HTTP only.`);
+  }
+} else {
+  console.log('[HTTPS] Disabled: TLS_KEY_PATH and TLS_CERT_PATH not set. Serving HTTP only.');
+}
 
 httpApp.listen(8000, () => {
   console.log('[HLS Web Server] Serving HLS streams at http://localhost:8000/');
