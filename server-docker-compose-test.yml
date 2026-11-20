@@ -4,7 +4,7 @@ services:
   hcf-live-media-svr:
     build: .
     container_name: hcf-live-media-svr
-    network_mode: "host"
+    #network_mode: "host"
     # Tells Docker to run container processes under your current host user ID/group ID
     user: "${UID:-1000}:${GID:-1000}"
     ports:
@@ -23,4 +23,40 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    
+   volumes:
+    - type: bind
+      source: "/etc/letsencrypt/live/test.hararechristianfellowship.org/privkey.pem"
+      target: "/etc/letsencrypt/live/test.hararechristianfellowship.org/privkey.pem"
+
+
+# services:
+#   hcf-live-media-svr:
+#     build: .
+#     container_name: hcf-live-media-svr
+#     #network_mode: "host"
+#     # Tells Docker to run container processes under your current host user ID/group ID
+#     user: "${UID:-1000}:${GID:-1000}"
+#     ports:
+#       - "1935:1935"
+#       - "8000:8000"
+#     volumes:
+#       - ./media:/usr/src/app/media
+#       - type: bind
+#         source: /etc/letsencrypt/live/test.hararechristianfellowship.org
+#         target: /etc/letsencrypt/live/test.hararechristianfellowship.org
+#         read_only: true
+#       - type: bind
+#         source: /etc/letsencrypt/archive/test.hararechristianfellowship.org
+#         target: /etc/letsencrypt/archive/test.hararechristianfellowship.org
+#         read_only: true
+#     extra_hosts:
+#       - "host.docker.internal:host-gateway"
+#     environment:
+#       - API_BASE_URL=http://host.docker.internal:7002
+#     restart: unless-stopped
+#     healthcheck: # this is not working properly - need more work!
+#       test: ["CMD", "curl", "-f", "http://localhost:8001/"]
+#       interval: 30s
+#       timeout: 5s
+#       retries: 3
+#       start_period: 10s
