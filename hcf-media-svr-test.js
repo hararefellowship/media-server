@@ -4,6 +4,7 @@ const { spawn } = require('child_process');
 const { webcrypto } = require('node:crypto');
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression');
 const NodeMediaServer = require('node-media-server');
 const axios = require('axios'); // Import axios (if using CommonJS in Node.js)
 
@@ -24,6 +25,9 @@ if (!fs.existsSync(mediaPath)) {
 const ffmpegProcesses = new Map();
 const httpApp = express();
 httpApp.use(cors());
+// Gzip HLS playlists (.m3u8). They are plain text, re-downloaded by every viewer every few seconds,
+// and compress to ~8% of their size. Video segments (.m4s/.mp4) are already compressed, so they're left alone.
+httpApp.use(compression({ filter: (req) => req.path.endsWith('.m3u8') }));
 httpApp.use('/', express.static(mediaPath));
 
 const sslOptions = {
@@ -155,19 +159,23 @@ nms.on('postPublish', async (id, StreamPath) => { // async so we can wait for ex
     '-map', '0:a?', '-c:a:3', 'aac', '-b:a:3', '64k',
 
     // Encoding performance & keyframe alignment
+    // A keyframe exactly every 2 s whatever the input frame rate (-g 60 assumed 30 fps), so every
+    // rendition cuts its segments at the same moments and players can switch quality cleanly.
     '-preset', 'veryfast',
-    '-g', '60',
-    '-keyint_min', '60',
+    '-force_key_frames', 'expr:gte(t,n_forced*2)',
     '-sc_threshold', '0',
-    
+
     // HLS output options
+    // 2 s segments keep live latency low (~6 s). Longer segments would shrink the playlist further
+    // but add latency; with gzip the playlist cost is already small.
     '-f', 'hls',
     '-hls_time', '2',
     '-hls_playlist_type', 'event',
     '-master_pl_name', 'index.m3u8',
     '-var_stream_map', 'v:0,a:0,name:540p v:1,a:1,name:480p v:2,a:2,name:360p v:3,a:3,name:144p',
     '-hls_segment_type', 'fmp4',
-    '-hls_flags', 'delete_segments+independent_segments+program_date_time',
+    // No program_date_time: it added a timestamp line to every playlist entry (85 → 31 bytes per entry).
+    '-hls_flags', 'delete_segments+independent_segments',
 
     // FIXED: Ensure forward slashes for FFmpeg's %v pattern across Windows/Linux
     path.join(outputDir, 'v%v', 'stream.m3u8').replace(/\\/g, '/')
