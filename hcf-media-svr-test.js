@@ -6,9 +6,10 @@ const express = require('express');
 const cors = require('cors');
 const NodeMediaServer = require('node-media-server');
 const axios = require('axios'); // Import axios (if using CommonJS in Node.js)
-const https = require('https');
+// const https = require('https');
+const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:7002';
 // const API_BASE_URL = process.env.API_BASE_URL || 'http://host.docker.internal:7002';
-const API_BASE_URL = process.env.API_BASE_URL || 'https://test.hararechristianfellowship.org';
+// const API_BASE_URL = process.env.API_BASE_URL || 'https://test.hararechristianfellowship.org';
 
 const ffmpegProcesses = new Map();
 const mp4Processes = new Map();
@@ -29,14 +30,14 @@ const httpApp = express();
 httpApp.use(cors());
 httpApp.use('/', express.static(mediaPath));
 
-const sslOptions = {
-  key: fs.readFileSync('/etc/letsencrypt/live/test.hararechristianfellowship.org/privkey.pem'),
-  cert: fs.readFileSync('/etc/letsencrypt/live/test.hararechristianfellowship.org/fullchain.pem')
-};
+// const sslOptions = {
+//   key: fs.readFileSync('/etc/letsencrypt/live/test.hararechristianfellowship.org/privkey.pem'),
+//   cert: fs.readFileSync('/etc/letsencrypt/live/test.hararechristianfellowship.org/fullchain.pem')
+// };
 
-https.createServer(sslOptions, httpApp).listen(8443, () => {
-  console.log('[HLS Web Server] Serving multi-bitrate HLS streams securely at https://domain.co.zw:8443/');
-});
+// https.createServer(sslOptions, httpApp).listen(8443, () => {
+//   console.log('[HLS Web Server] Serving multi-bitrate HLS streams securely at https://domain.co.zw:8443/');
+// });
 
 httpApp.listen(8000, () => {
   console.log('[HLS Web Server] Serving HLS streams at http://localhost:8000/');
@@ -71,7 +72,7 @@ nms.on('postPublish', async (id, StreamPath) => { // async so we can wait for ex
   }
 
   let dynamicStreamKey;
-  const targetUrl = `${API_BASE_URL}/api/v1/streams/getActiveLiveStream`;
+  const targetUrl = `${API_BASE_URL}/api/v1/streamData/getActiveLiveStream`;
   const maxAttempts = 3;
   const baseDelayMs = 400;
 
