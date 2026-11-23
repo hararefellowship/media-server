@@ -6,8 +6,12 @@ const express = require('express');
 const cors = require('cors');
 const NodeMediaServer = require('node-media-server');
 const axios = require('axios'); // Import axios (if using CommonJS in Node.js)
+const https = require('https');
+// const API_BASE_URL = process.env.API_BASE_URL || 'http://host.docker.internal:7002';
+const API_BASE_URL = process.env.API_BASE_URL || 'https://test.hararechristianfellowship.org';
 
-const API_BASE_URL = process.env.API_BASE_URL || 'http://host.docker.internal:7002';
+const ffmpegProcesses = new Map();
+const mp4Processes = new Map();
 
 // Polyfill webcrypto for Node environment
 if (!globalThis.crypto) {
@@ -21,7 +25,6 @@ if (!fs.existsSync(mediaPath)) {
   fs.mkdirSync(mediaPath, { recursive: true });
 }
 
-const ffmpegProcesses = new Map();
 const httpApp = express();
 httpApp.use(cors());
 httpApp.use('/', express.static(mediaPath));
@@ -193,8 +196,6 @@ nms.on('postPublish', async (id, StreamPath) => { // async so we can wait for ex
   const mp4OutputPath = path.join(outputDir, `${streamKey}.mp4`); // we can change the path to point to our live dir (later)
   console.log(`[FFmpeg] MP4 Recording Path: ${mp4OutputPath}`);
 
-  const mp4Processes = new Map();
-
   if (mp4Processes.has(id)) {
     try { mp4Processes.get(id).kill(); } catch (e) {}
   }
@@ -233,10 +234,12 @@ nms.on('postPublish', async (id, StreamPath) => { // async so we can wait for ex
 
 nms.on('donePublish', (id) => {
   console.log(`[Stream Ended] Killing FFmpeg process for session ${id}`);
-  const proc = ffmpegProcesses.get(id);
-  if (proc) {
-    proc.kill('SIGINT');
-    ffmpegProcesses.delete(id);
+  for (const map of [ffmpegProcesses, mp4Processes]) {
+    const proc = map.get(id);
+    if (proc) {
+      proc.kill('SIGINT');
+      map.delete(id);
+    }
   }
 });
 
